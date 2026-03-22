@@ -628,8 +628,10 @@ class InteractionMeshRetargeter:
                         Jz @ dqa <= z_delta + self.foot_lock.tolerance,
                     ]
 
-        # Non-penetration constraints
-        Js, phis = self._update_jacobians_and_phis_from_q(q)
+        # Non-penetration constraints (optional)
+        Js, phis = ({}, {})
+        if self.activate_obj_non_penetration:
+            Js, phis = self._update_jacobians_and_phis_from_q(q)
         for key, phi in phis.items():
             Ja_n_full = Js[key]
             Ja_n = Ja_n_full[self.q_a_indices]
@@ -940,6 +942,25 @@ class InteractionMeshRetargeter:
 
         return candidates
 
+    def _supplement_ground_foot_geom_pairs(self, m: mujoco.MjModel, candidates: set[tuple[int, int]]) -> None:
+        """Ensure ground vs foot collision geoms are candidates even if broad-phase misses (e.g. feet > margin above plane)."""
+        if self.object_name != "ground":
+            return
+        gid_g = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "ground")
+        if gid_g < 0:
+            return
+        for link_name in self.task_constants.FOOT_STICKING_LINKS:
+            bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, link_name)
+            if bid < 0:
+                continue
+            for g in range(m.ngeom):
+                if int(m.geom_bodyid[g]) != bid:
+                    continue
+                if int(m.geom_contype[g]) == 0 and int(m.geom_conaffinity[g]) == 0:
+                    continue
+                a, b = (min(gid_g, g), max(gid_g, g))
+                candidates.add((a, b))
+
     def _update_jacobians_and_phis_from_q(self, q: np.ndarray):
         self.robot_data.qpos[:] = q
 
@@ -949,7 +970,9 @@ class InteractionMeshRetargeter:
         threshold = float(self.collision_detection_threshold)
 
         # 1) Fast prefilter via mj_collision with temporary margins
-        candidates = self._prefilter_pairs_with_mj_collision(threshold)
+        margin = max(threshold, 0.25) if self.object_name == "ground" else threshold
+        candidates = self._prefilter_pairs_with_mj_collision(margin)
+        self._supplement_ground_foot_geom_pairs(m, candidates)
 
         Js, phis = {}, {}
         fromto = np.zeros(6, dtype=float)
@@ -979,8 +1002,16 @@ class InteractionMeshRetargeter:
                 continue
 
             fromto[:] = 0.0
-            dist = mujoco.mj_geomDistance(m, d, g1, g2, threshold, fromto)
-            if dist <= threshold:
+            # Pairs involving the floor need a larger query distance: SMPL-scaled init often
+            # leaves feet/base >0.1m above z=0, so threshold=0.1 never creates constraints.
+            g1n = (self._geom_names[g1] or "").lower()
+            g2n = (self._geom_names[g2] or "").lower()
+            pair_threshold = threshold
+            if self.object_name == "ground" and ("ground" in g1n or "ground" in g2n):
+                pair_threshold = max(threshold, 1.25)
+
+            dist = mujoco.mj_geomDistance(m, d, g1, g2, pair_threshold, fromto)
+            if dist <= pair_threshold:
                 J_rel = self._compute_jacobian_for_contact_relative(
                     m.geom(g1), m.geom(g2), self._geom_names[g1], self._geom_names[g2], fromto, dist
                 )

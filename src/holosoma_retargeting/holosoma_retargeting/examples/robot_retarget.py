@@ -467,6 +467,7 @@ def build_retargeter_kwargs_from_config(
         "q_a_init_idx": retargeter_config.q_a_init_idx,
         "activate_joint_limits": retargeter_config.activate_joint_limits,
         "activate_obj_non_penetration": retargeter_config.activate_obj_non_penetration,
+        "collision_detection_threshold": retargeter_config.collision_detection_threshold,
         "activate_foot_sticking": retargeter_config.activate_foot_sticking,
         "foot_lock": retargeter_config.foot_lock,
         "penetration_tolerance": retargeter_config.penetration_tolerance,
@@ -610,6 +611,7 @@ def main(cfg: RetargetingConfig) -> None:
     task_type = cfg.task_type
 
     # Set defaults based on task type
+    # assigned here is correct
     data_format: str = cfg.data_format or DEFAULT_DATA_FORMATS[task_type]
     save_dir = cfg.save_dir if cfg.save_dir is not None else Path(DEFAULT_SAVE_DIRS[task_type].format(robot=robot))
     data_path = cfg.data_path
@@ -628,9 +630,11 @@ def main(cfg: RetargetingConfig) -> None:
     # Task-specific object setup: set default object_dir for climbing if not provided
     if task_type == "climbing" and cfg.task_config.object_dir is None:
         from dataclasses import replace
-
+        # add object_dir property to task config. 
         cfg.task_config = replace(cfg.task_config, object_dir=data_path / task_name)
 
+    # create task constants (specifically the UPPERCASE attributes) such as 
+    # OBJECT_NAME, OBJECT_URDF_FILE, OBJECT_MESH_FILE, OBJECT_DIR, OBJECT_URDF_TEMPLATE, SCENE_XML_FILE
     constants = create_task_constants(
         robot_config=cfg.robot_config,
         motion_data_config=cfg.motion_data_config,
@@ -639,6 +643,7 @@ def main(cfg: RetargetingConfig) -> None:
     )
 
     # Load motion data
+    # this is the main function that loads the motion data.
     human_joints, object_poses, smpl_scale = load_motion_data(
         task_type, data_format, data_path, task_name, constants, cfg.motion_data_config
     )

@@ -216,6 +216,7 @@ def process_single_task(args):
                 object_scale_augmented=aug_config["scale"],
             )
         else:
+            #import pdb; pdb.set_trace()
             object_local_pts, object_local_pts_demo, object_urdf_path = setup_object_data(
                 task_type,
                 constants,

@@ -18,6 +18,8 @@ class RobotDefaults(TypedDict):
 _ROBOT_DEFAULTS: dict[str, RobotDefaults] = {
     "g1": {"robot_dof": 29, "robot_height": 1.32, "object_name": "ground"},
     "t1": {"robot_dof": 23, "robot_height": 1.2, "object_name": "ground"},
+    # Approximate standing height for scaling SMPL/OMOMO demos (tune to your CAD; was 0.8 and caused bad scale).
+    "myrobot": {"robot_dof": 22, "robot_height": 0.8, "object_name": "ground"},
 }
 
 
@@ -154,6 +156,12 @@ class RobotConfig:
                 "left_foot_sphere_5_link",
                 "right_foot_sphere_5_link",
             ]
+        if self.robot_type == "myrobot":
+            return [
+                "leg_left_ankle_roll",
+                "leg_right_ankle_roll",
+            ]
+
         raise ValueError(f"Invalid robot type: {self.robot_type}")
 
     FOOT_STICKING_LINKS = property(

@@ -41,6 +41,11 @@ class RetargeterConfig:
     activate_obj_non_penetration: bool = True
     """Whether to enforce object non-penetration constraints."""
 
+    collision_detection_threshold: float = 0.1
+    """Max geom–geom distance (m) for contact queries. If the robot starts far above the
+    floor (common with SMPL/OMOMO scale + a new URDF), 0.1 is too small and floor
+    constraints never activate—increase to ~0.5–1.5 for humanoids like Berkeley."""
+
     activate_foot_sticking: bool = True
     """Whether to enforce foot sticking constraints."""
 
