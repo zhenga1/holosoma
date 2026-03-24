@@ -58,6 +58,8 @@ class InteractionMeshRetargeter:
         foot_lock: FootLockConfig | None = None,
         visualize: bool = False,
         debug: bool = False,
+        retarget_diagnostics: bool = False,
+        retarget_diagnostics_stride: int = 30,
         w_nominal_tracking_init: float = 5.0,
         nominal_tracking_tau: float = 10.0,
     ):
@@ -81,6 +83,8 @@ class InteractionMeshRetargeter:
             foot_sticking_tolerance: tolerance for foot sticking constraints in x, y.
             foot_lock: configuration for explicit frame-range based foot locking constraints.
             nominal_tracking_tau: the time constant for the nominal tracking cost.
+            retarget_diagnostics: print sampled-frame stats and optional Viser correspondence markers.
+            retarget_diagnostics_stride: log every N frames (plus first and last) when diagnostics on.
         """
 
         self.robot_model_path = task_constants.ROBOT_URDF_FILE
@@ -95,6 +99,9 @@ class InteractionMeshRetargeter:
         self.step_size = step_size
         self.visualize = visualize
         self.debug = debug
+        self.retarget_diagnostics = retarget_diagnostics
+        self.retarget_diagnostics_stride = int(retarget_diagnostics_stride)
+        self._retarget_diag_handles = []
         self.demo_joints = task_constants.DEMO_JOINTS
         self.laplacian_match_links = task_constants.JOINTS_MAPPING
         self.task_constants = task_constants
@@ -320,6 +327,52 @@ class InteractionMeshRetargeter:
             self.draw_keypoints(q, name=f"{group_name}_q", rgba=(0.0, 1.0, 0.0, 1.0))
             self.draw_keypoints(c, name=f"{group_name}_c", rgba=(1.0, 0.0, 0.0, 1.0))
 
+    def _retarget_diag_should_log_frame(self, frame_idx: int, num_frames: int) -> bool:
+        """True on first, last, and every ``retarget_diagnostics_stride``-th frame (when diagnostics on)."""
+        if not self.retarget_diagnostics or num_frames <= 0:
+            return False
+        last = num_frames - 1
+        stride = self.retarget_diagnostics_stride
+        if stride <= 0:
+            return frame_idx in (0, last)
+        return frame_idx == 0 or frame_idx == last or (frame_idx % stride == 0)
+
+    def _retarget_diag_clear_vis_handles(self) -> None:
+        for h in self._retarget_diag_handles:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        self._retarget_diag_handles.clear()
+
+    def _print_retarget_diagnostics_banner(
+        self,
+        num_frames: int,
+        object_points_local_demo: np.ndarray,
+        object_points_local: np.ndarray,
+    ) -> None:
+        if not self.retarget_diagnostics:
+            return
+        print("\n=== Retarget diagnostics (InteractionMeshRetargeter) ===")
+        print(
+            f"object_name={self.object_name!r}  nq={self.nq}  n_opt_vars={len(self.q_a_indices)}  "
+            f"frames={num_frames}"
+        )
+        print("JOINTS_MAPPING order (demo joint -> robot link, used for Laplacian vertices):")
+        for hk, rk in self.laplacian_match_links.items():
+            print(f"  {hk} -> {rk}")
+        nd = int(object_points_local_demo.shape[0])
+        no = int(object_points_local.shape[0])
+        print(f"Object sample points: demo_mesh={nd}  retarget_mesh={no}  (Laplacian |V| = {len(self.laplacian_match_links) + nd})")
+        print(
+            f"Constraints: penetration={self.activate_obj_non_penetration} "
+            f"(collision_detection_threshold={self.collision_detection_threshold}), "
+            f"joint_limits={self.activate_joint_limits}, foot_sticking={self.activate_foot_sticking}"
+        )
+        print(f"Foot links: {list(self.foot_links.keys())}")
+        s = self.retarget_diagnostics_stride
+        print(f"Logging stride: N={s} -> frames 0, every N, and last (use --retargeter.retarget-diagnostics-stride to change)\n")
+
     def retarget_motion(
         self,
         human_joint_motions,
@@ -365,8 +418,11 @@ class InteractionMeshRetargeter:
         obj_pts_list = []  # original size object pts
 
         print(f"\nStarting motion retargeting for {num_frames} frames...")
+        self._print_retarget_diagnostics_banner(num_frames, object_points_local_demo, object_points_local)
 
+        # add progress bar
         with tqdm(range(num_frames)) as pbar:
+            # iterate over frames (is this for loop necessary?/)
             for i in pbar:
                 # Get object poses and transform points
                 object_quat_demo = object_poses[i, 3:]
@@ -378,10 +434,12 @@ class InteractionMeshRetargeter:
                 if self.object_name == "ground":
                     human_mapped_joints_in_object = human_mapped_joints
                 else:
+                    # transform the human mapped joints to the local (object) frame
                     human_mapped_joints_in_object = transform_points_world_to_local(
                         object_quat_demo, object_trans_demo, human_mapped_joints
                     )
 
+                # create a tetrahedral mesh from the human mapped joints and the object points in the demo frame
                 source_vertices, source_tetrahedra = create_interaction_mesh(
                     np.vstack([human_mapped_joints_in_object, object_points_local_demo])
                 )
@@ -430,6 +488,53 @@ class InteractionMeshRetargeter:
                     n_iter=50 if i == 0 else 10,
                     frame_idx=i,
                 )
+                if self._retarget_diag_should_log_frame(i, num_frames):
+                    tl_norm = float(np.linalg.norm(target_laplacian))
+                    n_vert = int(source_vertices.shape[0])
+                    n_tet = int(len(source_tetrahedra))
+                    n_pen = 0
+                    if self.activate_obj_non_penetration:
+                        _, phis = self._update_jacobians_and_phis_from_q(q)
+                        n_pen = len(phis)
+                    _, p_oc_dict, _ = self._calc_manipulator_jacobians(
+                        q, links=self.laplacian_match_links, obj_frame=(self.object_name != "ground")
+                    )
+                    robot_keys = list(self.laplacian_match_links.keys())
+                    r_obj = np.array([p_oc_dict[k] for k in robot_keys])
+                    h_obj = human_mapped_joints_in_object
+                    if r_obj.shape[0] == h_obj.shape[0]:
+                        mean_corr_err = float(np.mean(np.linalg.norm(r_obj - h_obj, axis=1)))
+                    else:
+                        mean_corr_err = float("nan")
+                    fs = foot_sticking_sequences[i]
+                    foot_summary = {k: bool(fs[k]) for k in fs}
+                    print(
+                        f"[retarget diag] frame {i}/{num_frames - 1}  |V|={n_vert}  |T|={n_tet}  "
+                        f"||target_lap||_F={tl_norm:.5g}  solver_cost={cost:.5g}  n_pen={n_pen}  "
+                        f"mean||r-h||_obj(m)={mean_corr_err:.4g}  foot={foot_summary}"
+                    )
+                    if self.visualize:
+                        self._retarget_diag_clear_vis_handles()
+                        _, p_w_dict, _ = self._calc_manipulator_jacobians(
+                            q, links=self.laplacian_match_links, obj_frame=False
+                        )
+                        r_world = np.array([p_w_dict[k] for k in robot_keys])
+                        self._retarget_diag_handles.extend(
+                            self.draw_keypoints(
+                                human_mapped_joints, name="diag_human_corr", rgba=(1.0, 0.55, 0.1, 1.0)
+                            )
+                            or []
+                        )
+                        self._retarget_diag_handles.extend(
+                            self.draw_keypoints(
+                                r_world, name="diag_robot_corr", rgba=(0.55, 0.1, 1.0, 1.0)
+                            )
+                            or []
+                        )
+                        # debug path calls draw_q again below; avoid double update on overlap
+                        if not self.debug:
+                            self.draw_q(q)
+
                 if self.debug:
                     robot_link_positions = self._get_robot_link_positions(
                         q, self.laplacian_match_links.values()
@@ -630,6 +735,8 @@ class InteractionMeshRetargeter:
 
         # Non-penetration constraints (optional)
         Js, phis = ({}, {})
+        # Only calculate jacobians and phis if non-penetration constraints are activated
+        # which stops the calculation of jacobians and phis for the ground and object
         if self.activate_obj_non_penetration:
             Js, phis = self._update_jacobians_and_phis_from_q(q)
         for key, phi in phis.items():

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import numpy as np
 import viser  # type: ignore[import-not-found]
@@ -23,6 +23,7 @@ def create_motion_control_sliders(
     initial_fps: int = 30,
     initial_interp_mult: int = 2,
     loop: bool = True,
+    on_frame_change: Callable[[int, np.ndarray], None] | None = None,
 ) -> Tuple[List[viser.GuiInputHandle[int]], List[float]]:
     """
     Create a slider + play/pause controls and a background player thread with smooth, slerp-based interpolation.
@@ -46,6 +47,8 @@ def create_motion_control_sliders(
         initial_fps: base FPS for playback.
         initial_interp_mult: visual upsampling multiplier.
         loop: whether to wrap around at the end.
+        on_frame_change: optional callback invoked whenever a discrete frame index
+            is applied in replay/scrubbing. Signature: (frame_idx, q_frame).
 
     Returns:
         (controls, initial_values) — currently returns the [frame_slider] and [0.0]
@@ -155,7 +158,10 @@ def create_motion_control_sliders(
 
     def _apply_discrete_frame(i: int) -> None:
         i = int(np.clip(i, 0, n_frames - 1))
-        _apply_frame_from_q(qpos[i])
+        q_frame = qpos[i]
+        _apply_frame_from_q(q_frame)
+        if on_frame_change is not None:
+            on_frame_change(i, q_frame)
 
     # ---------------- controls ----------------
     @play_btn.on_click
@@ -214,6 +220,8 @@ def create_motion_control_sliders(
 
                     q_interp = _interp_frame(qpos, k0, k1, u)
                     _apply_frame_from_q(q_interp)
+                    if on_frame_change is not None:
+                        on_frame_change(k0, qpos[k0])
 
                     # Update slider to show current frame number in real-time
                     # Use flag to prevent callback from pausing playback

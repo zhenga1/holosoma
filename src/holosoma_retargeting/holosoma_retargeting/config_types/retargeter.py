@@ -67,6 +67,17 @@ class RetargeterConfig:
     debug: bool = False
     """Whether to enable debug mode."""
 
+    retarget_diagnostics: bool = False
+    """If True, print per-frame (sampled) retargeting stats: mesh size, Laplacian norm, solver cost,
+    penetration constraint count, mean human–robot correspondence error in object frame, foot flags.
+    With ``visualize=True``, also draws orange human vs purple robot correspondence keypoints in Viser
+    on the same sampled frames. Enable via e.g.
+    ``--retargeter.retarget-diagnostics --retargeter.retarget-diagnostics-stride 20``."""
+
+    retarget_diagnostics_stride: int = 30
+    """When ``retarget_diagnostics`` is True, log/draw on frame 0, every N-th frame, and the last frame.
+    Set to 0 to only log frame 0 and the last frame."""
+
     w_nominal_tracking_init: float = 5.0
     """Initial weight for nominal tracking cost."""
 

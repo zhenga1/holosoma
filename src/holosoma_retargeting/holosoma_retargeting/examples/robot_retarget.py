@@ -3,6 +3,12 @@ Unified robot retargeting script for all task types:
 - robot_only: Robot-only retargeting with ground interaction
 - object_interaction: Object manipulation retargeting (InterMimic)
 - climbing: Climbing retargeting with dynamic terrain
+
+Retargeting diagnostics (prints + optional Viser human/robot correspondence spheres)::
+
+    python examples/robot_retarget.py --task-type robot_only --robot g1 \\
+        --retargeter.retarget-diagnostics --retargeter.retarget-diagnostics-stride 25 \\
+        --retargeter.visualize
 """
 
 from __future__ import annotations
@@ -475,6 +481,8 @@ def build_retargeter_kwargs_from_config(
         "step_size": retargeter_config.step_size,
         "visualize": retargeter_config.visualize,
         "debug": retargeter_config.debug,
+        "retarget_diagnostics": retargeter_config.retarget_diagnostics,
+        "retarget_diagnostics_stride": retargeter_config.retarget_diagnostics_stride,
         "w_nominal_tracking_init": retargeter_config.w_nominal_tracking_init,
     }
     if task_type == "climbing":
