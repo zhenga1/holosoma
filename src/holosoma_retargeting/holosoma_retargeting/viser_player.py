@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import trimesh
 import tyro
 import viser  # type: ignore[import-not-found]  # pip install viser
 import yourdfpy  # type: ignore[import-untyped]  # pip install yourdfpy
@@ -24,12 +25,16 @@ def load_npz(npz_path: str):
     # expected: qpos [T, ?], and optional fps
     qpos = data["qpos"]
     fps = int(data["fps"]) if "fps" in data else 30
-    return qpos, fps
+    diag_human = data["diag_human_mapped_world"] if "diag_human_mapped_world" in data else None
+    diag_robot = data["diag_robot_mapped_world"] if "diag_robot_mapped_world" in data else None
+    return qpos, fps, diag_human, diag_robot
 
 
 def make_player(
     config: ViserConfig,
     qpos: np.ndarray,
+    diag_human_mapped_world: np.ndarray | None = None,
+    diag_robot_mapped_world: np.ndarray | None = None,
     fps: int | None = None,
 ):
     """
@@ -43,6 +48,7 @@ def make_player(
     We'll infer R from the robot URDF's actuated joints in ViserUrdf.
     """
     server = viser.ViserServer()
+    n_frames = int(qpos.shape[0])
 
     # Root frames
     robot_root = server.scene.add_frame("/robot", show_axes=False)
@@ -82,6 +88,64 @@ def make_player(
         if vo is not None:
             vo.show_visual = bool(show_meshes_cb.value)
 
+    diag_handles = []
+
+    def _draw_keypoints(points: np.ndarray, name: str, rgba=(0.0, 0.0, 1.0, 1.0)):
+        sphere = trimesh.primitives.Sphere(radius=0.02)
+        vertices = sphere.vertices
+        faces = sphere.faces
+        color = tuple(int(c * 255) for c in rgba[:3])
+        opacity = float(rgba[3])
+        return server.scene.add_batched_meshes_simple(
+            f"/{name}",
+            vertices=vertices,
+            faces=faces,
+            batched_positions=np.asarray(points),
+            batched_wxyzs=np.tile(np.array([1, 0, 0, 0]), (points.shape[0], 1)),
+            batched_colors=color,
+            opacity=opacity,
+        )
+
+    def _clear_diag_handles():
+        for h in diag_handles:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        diag_handles.clear()
+
+    def _should_log_frame(frame_idx: int, num_frames: int) -> bool:
+        if not config.retarget_diagnostics or num_frames <= 0:
+            return False
+        last = num_frames - 1
+        stride = int(config.retarget_diagnostics_stride)
+        if stride <= 0:
+            return frame_idx in (0, last)
+        return frame_idx == 0 or frame_idx == last or (frame_idx % stride == 0)
+
+    replay_last_diag_frame = {"idx": -1}
+
+    def _on_frame_change(frame_idx: int, _q_frame: np.ndarray) -> None:
+        if frame_idx == replay_last_diag_frame["idx"]:
+            return
+        replay_last_diag_frame["idx"] = frame_idx
+        if not _should_log_frame(frame_idx, n_frames):
+            _clear_diag_handles()
+            return
+        if diag_human_mapped_world is None or diag_robot_mapped_world is None:
+            _clear_diag_handles()
+            return
+        if frame_idx >= len(diag_human_mapped_world) or frame_idx >= len(diag_robot_mapped_world):
+            _clear_diag_handles()
+            return
+        h_world = diag_human_mapped_world[frame_idx]
+        r_world = diag_robot_mapped_world[frame_idx]
+        mean_corr_err = float(np.mean(np.linalg.norm(r_world - h_world, axis=1)))
+        print(f"[viser_player replay diag] frame {frame_idx}/{n_frames - 1}  mean||r-h||_world(m)={mean_corr_err:.4g}")
+        _clear_diag_handles()
+        diag_handles.append(_draw_keypoints(h_world, "diag_human_corr", rgba=(1.0, 0.55, 0.1, 1.0)))
+        diag_handles.append(_draw_keypoints(r_world, "diag_robot_corr", rgba=(0.55, 0.1, 1.0, 1.0)))
+
     # ---------- Use reusable motion control sliders from viser_utils ----------
     create_motion_control_sliders(
         server=server,
@@ -95,8 +159,24 @@ def make_player(
         initial_fps=actual_fps,
         initial_interp_mult=config.visual_fps_multiplier,
         loop=config.loop,
+        on_frame_change=_on_frame_change,
     )
-    n_frames = int(qpos.shape[0])
+    if config.retarget_diagnostics:
+        has_saved_diag = (
+            diag_human_mapped_world is not None
+            and diag_robot_mapped_world is not None
+            and len(diag_human_mapped_world) == n_frames
+            and len(diag_robot_mapped_world) == n_frames
+        )
+        print(
+            f"[viser_player] retarget_diagnostics=on stride={config.retarget_diagnostics_stride} "
+            f"(saved diag points: {'yes' if has_saved_diag else 'no'})"
+        )
+        if not has_saved_diag:
+            print(
+                "[viser_player] Missing diag arrays in NPZ. Re-run retarget with "
+                "--retargeter.retarget-diagnostics to save demo/robot correspondence points."
+            )
     print(
         f"[viser_player] Loaded {n_frames} frames | robot_dof={robot_dof} | "
         f"object={'yes' if (config.object_urdf and config.assume_object_in_qpos) else 'no'}"
@@ -107,10 +187,12 @@ def make_player(
 
 def main(cfg: ViserConfig) -> None:
     """Main function for viser player."""
-    qpos, fps = load_npz(cfg.qpos_npz)
+    qpos, fps, diag_human, diag_robot = load_npz(cfg.qpos_npz)
     make_player(
         config=cfg,
         qpos=qpos,
+        diag_human_mapped_world=diag_human,
+        diag_robot_mapped_world=diag_robot,
         fps=fps,
     )
 

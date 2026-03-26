@@ -416,6 +416,8 @@ class InteractionMeshRetargeter:
         tetrahedra = []
         obj_pts_demo_list = []  # scaled object pts
         obj_pts_list = []  # original size object pts
+        diag_human_mapped_world_list = []
+        diag_robot_mapped_world_list = []
 
         print(f"\nStarting motion retargeting for {num_frames} frames...")
         self._print_retarget_diagnostics_banner(num_frames, object_points_local_demo, object_points_local)
@@ -488,6 +490,14 @@ class InteractionMeshRetargeter:
                     n_iter=50 if i == 0 else 10,
                     frame_idx=i,
                 )
+                if self.retarget_diagnostics:
+                    _, p_w_diag_dict, _ = self._calc_manipulator_jacobians(
+                        q, links=self.laplacian_match_links, obj_frame=False
+                    )
+                    diag_robot_mapped_world_list.append(
+                        np.array([p_w_diag_dict[k] for k in self.laplacian_match_links.keys()])
+                    )
+                    diag_human_mapped_world_list.append(human_mapped_joints.copy())
                 if self._retarget_diag_should_log_frame(i, num_frames):
                     tl_norm = float(np.linalg.norm(target_laplacian))
                     n_vert = int(source_vertices.shape[0])
@@ -572,6 +582,9 @@ class InteractionMeshRetargeter:
             dest_res_path,
             qpos=np.array(retargeted_motions)[1:],
             human_joints=human_joint_motions,
+            # optional diagnostics: human and robot mapped world points (viser_player can take this data in and visualize it)
+            diag_human_mapped_world=np.asarray(diag_human_mapped_world_list),
+            diag_robot_mapped_world=np.asarray(diag_robot_mapped_world_list),
             fps=30,
             cost=cost,
         )

@@ -54,3 +54,9 @@ class ViserConfig:
 
     max_interp_mult: int = 8
     """Maximum interpolation multiplier."""
+
+    retarget_diagnostics: bool = False
+    """If True, render saved demo-vs-robot correspondence keypoints during replay."""
+
+    retarget_diagnostics_stride: int = 30
+    """Replay diagnostics stride: show on frame 0, every N-th frame, and last. Use 0 for first/last only."""
