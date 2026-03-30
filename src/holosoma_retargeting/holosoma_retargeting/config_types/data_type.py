@@ -244,7 +244,7 @@ JOINTS_MAPPINGS = {
         "R_Toe": "leg_right_ankle_roll",
         # `myrobot_22dof.xml` does not expose a dedicated head/neck joint.
         # `imu_2` is the closest rigid body proxy near the upper body.
-        "Head": "imu_2",
+        # "Head": "imu_2",
         "L_Wrist": "arm_left_hand_link",
         "R_Wrist": "arm_right_hand_link",
     },
